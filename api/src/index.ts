@@ -9,11 +9,13 @@
  *   GET /api/genres           播客分类列表
  *
  * 云端同步 (需配置 SHIYIN_DB_* 环境变量, 见 src/db.ts):
- *   POST   /api/sync/code     生成同步码
- *   POST   /api/sync/rotate   换码 (x-sync-code)
- *   DELETE /api/sync/code     删除身份及全部数据 (x-sync-code)
- *   GET    /api/sync/pull     增量拉取 (x-sync-code)
- *   POST   /api/sync/push     增量推送 (x-sync-code)
+ *   POST   /api/sync/register 注册 {username, password} -> {token}
+ *   POST   /api/sync/login    登录 {username, password} -> {token}
+ *   POST   /api/sync/logout   注销当前 token (Bearer)
+ *   DELETE /api/sync/account  删除账号及全部数据, body {password} (Bearer)
+ *   GET    /api/sync/status   数据库连通性诊断 (免鉴权)
+ *   GET    /api/sync/pull     增量拉取 (Bearer)
+ *   POST   /api/sync/push     增量推送 (Bearer)
  */
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'

@@ -1,10 +1,10 @@
 /**
  * 云端同步引擎 (Pinia)。
  *
- * 身份: 同步码 (localStorage shiyin-sync-code), 无注册。
+ * 身份: 账号密码 (token 存 localStorage shiyin-sync-token, 请求头 Authorization: Bearer)。
  * - 本地订阅/稍后听/进度/设置变化 -> 防抖 5s push (library.ts/settings.ts 经 syncBus 通知)
  * - App 启动 + 页面回到前台 -> pull (since 增量)
- * - 首次绑定: 先 pull, 再把本地全量合并后 push (union, 行级 last-write-wins)
+ * - 首次登录/注册: 先 pull, 再把本地全量合并后 push (union, 行级 last-write-wins)
  * - 冲突: last-write-wins (updated_at 毫秒时间戳)
  * - 云端回写本地时置 syncState.applyingRemote, 抑制回环推送
  */
@@ -36,14 +36,16 @@ import { syncState } from '../syncState'
 import { clearTombstones, readTombstones } from '../syncTomb'
 import { episodeKey } from '../utils/syncKey'
 
-const CODE_KEY = 'shiyin-sync-code'
+const TOKEN_KEY = 'shiyin-sync-token'
+const USERNAME_KEY = 'shiyin-sync-username'
 const SINCE_KEY = 'shiyin-sync-since'
 const LAST_KEY = 'shiyin-sync-last'
 const PUSH_DEBOUNCE = 5000
 
 export const useSyncStore = defineStore('sync', () => {
-  const code = ref<string>(safeGet(CODE_KEY) ?? '')
-  const bound = computed(() => code.value.length > 0)
+  const token = ref<string>(safeGet(TOKEN_KEY) ?? '')
+  const username = ref<string>(safeGet(USERNAME_KEY) ?? '')
+  const bound = computed(() => token.value.length > 0)
   const syncing = ref(false)
   const lastSyncAt = ref(Number(safeGet(LAST_KEY) ?? 0) || 0)
   const lastError = ref('')
@@ -67,61 +69,88 @@ export const useSyncStore = defineStore('sync', () => {
     }
   }
 
-  function setCode(v: string): void {
-    code.value = v
+  function setToken(v: string, name = ''): void {
+    token.value = v
     try {
-      if (v) localStorage.setItem(CODE_KEY, v)
-      else localStorage.removeItem(CODE_KEY)
+      if (v) {
+        localStorage.setItem(TOKEN_KEY, v)
+        if (name) localStorage.setItem(USERNAME_KEY, name)
+      } else {
+        localStorage.removeItem(TOKEN_KEY)
+        localStorage.removeItem(USERNAME_KEY)
+      }
     } catch {
       /* ignore */
     }
+    username.value = v ? name : ''
   }
 
   /* ---------------- 身份 ---------------- */
 
-  /** 生成同步码 (明文只返回这一次, 调用方负责展示 + 提示保存) */
-  async function generateCode(): Promise<string> {
-    const r = await syncApi.createCode()
-    return r.code
-  }
-
-  /** 用同步码绑定本机: 先 pull, 再本地全量合并 push */
-  async function bindCode(input: string): Promise<void> {
-    const c = input.trim()
-    if (!c) throw new Error('同步码不能为空')
-    setCode(c)
+  /** 注册: 成功后直接登录态, 拉取(空)后再把本地全量推上去 */
+  async function register(name: string, password: string): Promise<void> {
+    const u = name.trim()
+    if (!u) throw new Error('用户名不能为空')
+    if (password.length < 8) throw new Error('密码至少 8 位')
     lastError.value = ''
+    const r = await syncApi.register(u, password)
+    setToken(r.token, u)
     try {
       await pull()
     } catch (e) {
-      setCode('') // 码无效则不保留
+      setToken('')
       throw e
     }
     await pushNow()
   }
 
-  /** 解绑: 仅断开, 本地数据保留 */
-  function unbind(): void {
+  /** 登录: 先 pull 云端合并到本地, 再把合并结果推上去 */
+  async function login(name: string, password: string): Promise<void> {
+    const u = name.trim()
+    if (!u) throw new Error('用户名不能为空')
+    lastError.value = ''
+    const r = await syncApi.login(u, password)
+    setToken(r.token, u)
+    try {
+      await pull()
+    } catch (e) {
+      setToken('')
+      throw e
+    }
+    await pushNow()
+  }
+
+  /** 退出登录: 注销服务端 token, 本地数据保留 */
+  async function logout(): Promise<void> {
     if (pushTimer !== null) {
       clearTimeout(pushTimer)
       pushTimer = null
     }
     queued = false
-    setCode('')
+    const t = token.value
+    setToken('')
     lastError.value = ''
+    if (t) {
+      try {
+        await syncApi.logout(t)
+      } catch {
+        /* token 可能已过期, 本地已清除即可 */
+      }
+    }
   }
 
-  /** 换码: 旧码立即作废, 返回新码 */
-  async function rotateCode(): Promise<string> {
-    const r = await syncApi.rotate(code.value)
-    setCode(r.code)
-    return r.code
-  }
-
-  /** 删除云端身份及全部数据, 并解绑本机 */
-  async function deleteRemote(): Promise<void> {
-    await syncApi.remove(code.value)
-    unbind()
+  /** 删除账号及全部云端数据 (需密码二次校验), 本地数据保留 */
+  async function deleteAccount(password: string): Promise<void> {
+    const t = token.value
+    if (!t) return
+    await syncApi.deleteAccount(t, password)
+    if (pushTimer !== null) {
+      clearTimeout(pushTimer)
+      pushTimer = null
+    }
+    queued = false
+    setToken('')
+    lastError.value = ''
   }
 
   /* ---------------- 推送 ---------------- */
@@ -215,7 +244,7 @@ export const useSyncStore = defineStore('sync', () => {
     syncing.value = true
     try {
       const body = await buildPushBody()
-      const r = await syncApi.push(code.value, body)
+      const r = await syncApi.push(token.value, body)
       clearTombstones()
       lastSyncAt.value = r.server_time
       safeSet(LAST_KEY, String(r.server_time))
@@ -331,7 +360,7 @@ export const useSyncStore = defineStore('sync', () => {
     syncing.value = true
     try {
       const since = Number(safeGet(SINCE_KEY) ?? 0) || 0
-      const data = await syncApi.pull(code.value, since)
+      const data = await syncApi.pull(token.value, since)
       await applyPull(data)
       safeSet(SINCE_KEY, String(data.server_time))
       lastSyncAt.value = data.server_time
@@ -367,16 +396,16 @@ export const useSyncStore = defineStore('sync', () => {
   }
 
   return {
-    code,
+    token,
+    username,
     bound,
     syncing,
     lastSyncAt,
     lastError,
-    generateCode,
-    bindCode,
-    unbind,
-    rotateCode,
-    deleteRemote,
+    register,
+    login,
+    logout,
+    deleteAccount,
     pull,
     pushNow,
     startup,

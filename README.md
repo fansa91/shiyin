@@ -28,7 +28,7 @@ shiyin/
 - 资料库: 订阅 / 稍后听 / 播放历史 (localStorage 持久化)
 - 播放: shikwasa 播放器 — 章节跳转、倍速、快进/快退, 播放队列连续播放
 - 断点续播: 记录每集收听进度, 下次自动续播
-- 云端同步 (可选): 同步码方案, 多设备同步订阅/稍后听/播放进度/设置, 需后端配置 MySQL
+- 云端同步 (可选): 账号密码登录, 多设备同步订阅/稍后听/播放进度/设置, 需后端配置 MySQL
 - 外观: M3 seed color 完整 light/dark 配色, 跟随系统/浅色/深色切换
 - 响应式布局: ≥1280px 完整侧边栏 / 960–1280 图标栏 / <960 底部导航
 
@@ -40,20 +40,22 @@ shiyin/
 | `GET /api/rss?url=` | RSS 订阅源代理: 拉取并解析为节目/单集 JSON |
 | `GET /api/charts` | Apple Podcasts 排行榜代理 |
 | `GET /api/genres` | 播客分类列表 |
-| `POST /api/sync/code` | 生成同步码 (明文只返回一次) |
-| `POST /api/sync/rotate` | 换码, 旧码作废 (需 `x-sync-code`) |
-| `DELETE /api/sync/code` | 删除身份及全部云端数据 (需 `x-sync-code`) |
-| `GET /api/sync/pull?since=` | 增量拉取 (需 `x-sync-code`) |
-| `POST /api/sync/push` | 增量推送, 行级 last-write-wins (需 `x-sync-code`) |
+| `POST /api/sync/register` | 注册 `{username, password}` → `{token}` (用户名 3–32 位字母/数字/`_`/`-`, 密码 ≥8 位) |
+| `POST /api/sync/login` | 登录 `{username, password}` → `{token}` (失败统一 401, 防用户名枚举) |
+| `POST /api/sync/logout` | 注销当前 token (需 `Authorization: Bearer`) |
+| `DELETE /api/sync/account` | 删除账号及全部云端数据, body `{password}` 二次校验 (需 `Authorization: Bearer`) |
+| `GET /api/sync/status` | 数据库连通性诊断 `{db:"ok" \| "unconfigured" \| "error"}` (免鉴权) |
+| `GET /api/sync/pull?since=` | 增量拉取 (需 `Authorization: Bearer`) |
+| `POST /api/sync/push` | 增量推送, 行级 last-write-wins (需 `Authorization: Bearer`) |
 
 前端 iTunes Search API 部分 (搜索/排行榜/分类/节目详情) 直接在浏览器调用,
 无需经过后端。同步接口需后端配置 MySQL, 否则返回 503。
 
 ## 云端同步
 
-设置页 → 云端同步: 一台设备「生成同步码」, 在另一台设备输入绑定,
-即可跨设备同步订阅、稍后听、播放进度和设置。同步码即身份凭证 (服务端只存
-sha256), 无需注册; 丢失后云端数据无法找回, 可随时换码/解绑/删除云端数据。
+设置页 → 云端同步: 注册/登录账号, 即可跨设备同步订阅、稍后听、播放进度和设置。
+密码经 scrypt 加盐哈希存储 (服务端不存明文); 登录签发的 Bearer token 90 天过期,
+库里只存 token 的 sha256。首次登录自动把本机数据合并上云。
 
 后端需要 MySQL 8 (SSL 连接)。环境变量:
 

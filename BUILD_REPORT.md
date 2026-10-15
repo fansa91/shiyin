@@ -68,43 +68,33 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAKmud4nQxmsCezgE5wv7a8K3GN+4Ocx1K+HHyKtTeAn
    ```
    然后按 `deploy/Caddyfile` 手动配 Caddy（把 `listen.example.com` 换成真实域名）
 
-## 云端同步（2026-10-15 新增，未推送）
+## 云端同步身份体系变更：同步码 → 账号密码（2026-10-15，用户明确要求不用同步码）
 
-后端连 MySQL（用户 Oracle Cloud 免费实例，API 经公网 3306+SSL 连接），身份用同步码方案（无注册）。
+**api/ 改动**
+- 新增 `src/password.ts`：`node:crypto` scrypt（N=16384,r=8,p=1,64 字节 key,16 字节盐），存储格式 `scrypt$16384$8$1$<saltHex>$<hashHex>`，`verifyPassword` 用 `timingSafeEqual`；不引入 bcrypt/argon2（避免 native 依赖）
+- `src/migrate.ts` 重写 schema：`users(id, username UNIQUE, password_hash, created_at, last_seen)`、`sessions(token_hash PK, user_id, created_at, expires_at, last_seen)`；四张业务表外键改挂 `users(id)`（`identity_id`→`user_id`，约束改名 `fk_*_user`）；开头 `DROP TABLE IF EXISTS sync_identities`（废弃同步码表，从未在用户库建成功过，清残留）
+- `src/sync.ts` 重写：删除 `/code`、`/rotate`、`x-sync-code` 及旧限流；新增 `POST /register`（用户名 3–32 位 `[A-Za-z0-9_-]`，密码 ≥8 位；已存在 → 409 `username_taken`）、`POST /login`（失败统一 401 `bad_credentials`，防用户名枚举）、`POST /logout`（删当前 token）、`DELETE /account`（body `{password}` 二次校验，级联删全部数据）；token 为 32 字节 base64url（库里只存 sha256），`expires_at = NOW()+90天`，每次使用更新 last_seen，过期 token 删除并 401；认证头 `Authorization: Bearer`；限流：register 10/分钟、login 20/分钟、pull/push 30/分钟（内存，按场景分桶）；DB 错误仍 `{error:"db_error", code}` 500，未配置仍 503；`/status`、`/pull`、`/push` 逻辑不变（身份从 Bearer 解析）
+- `src/index.ts`：接口注释同步更新
 
-**api/ 新增**
-- `src/db.ts`：mysql2 连接池；读 `SHIYIN_DB_HOST/PORT/USER/PASSWORD/NAME`（`SHIYIN_DB_SSL_CA` 可选）；SSL 默认开启且校验服务端证书；未配置时返回 null，sync 接口降级 503，rss/charts 不受影响
-- `src/migrate.ts`：启动时幂等建表（InnoDB + utf8mb4，外键级联删除）；5 张表：`sync_identities` / `subscriptions` / `listen_later` / `progress` / `settings`
-- `src/syncKey.ts`：单集 key 规则（guid 优先，无 guid 时 audioUrl sha256），与前端 `web/src/utils/syncKey.ts` 同规则
-- `src/sync.ts`（挂载 `/api/sync`）：`POST /code`（32 字符 base64url 随机码，只存 sha256）、`POST /rotate`、`DELETE /code`（级联清数据）、`GET /pull?since=`（增量 + 墓碑，更新 last_seen）、`POST /push`（事务 + 行级 `IF(new.updated_at > old.updated_at)` newer-wins upsert，标准 MySQL 8 行别名写法 8.0.19+）；`x-sync-code` 认证（401）；pull/push 同 IP 1 分钟 30 次内存限流
-- `src/index.ts`：挂载路由 + 启动时 migrate（失败不致命）
-- **对任务 schema 的一处偏离**：`subscriptions` 加了 `feed_url TEXT`，`listen_later` 加了 `podcast_key`/`feed_url`，`progress` 加了 `title/podcast_title/artwork/audio_url/podcast_key/feed_url`——否则手动 RSS 订阅（feed_key='rss:hash' 无法反推 URL）和历史页元数据在跨设备恢复时会断裂
-
-**web/ 新增**
-- 设置页「云端同步」分组：生成同步码（只显示一次 + 复制）、输入码绑定、已绑定状态/上次同步时间、立即同步、换码、解绑（本地保留）、删除云端数据（二次确认）
-- `stores/sync.ts`（Pinia）：绑定后本地变更防抖 5s push；App 启动 + 回到前台 pull（since 增量）；首次绑定先 pull 再全量合并 push；冲突 last-write-wins；失败在设置页显示错误
-- `syncBus.ts` / `syncState.ts` / `syncTomb.ts`：变更通知总线、云端回写抑制标记、删除墓碑（取消订阅/移除稍后听记 deleted=1）
-- `library.ts` / `settings.ts`：写入钩子（emit + 墓碑 + settings updatedAt），云端回写时抑制
-- `api.ts`：`syncApi` 客户端（401/429/503 中文错误映射）
-
-**deploy/**
-- `deploy.sh` 新增 `--db-host/--db-port/--db-user/--db-password/--db-name/--db-ssl-ca`；有 `--db-host` 才写 `<dir>/api/db.env`（0600）；systemd 模板加 `EnvironmentFile=-@DIR@/api/db.env`（`-` 前缀可选；选 EnvironmentFile 而不用 Environment= 内联，避免密码出现在 `systemctl show`）
-- README.md：同步功能说明 + 环境变量表 + 部署示例
+**web/ 改动**
+- 设置页「云端同步」重做：未登录 → 登录/注册 tab（用户名+密码）；已登录 → 显示用户名、上次同步时间、立即同步、退出登录、删除账号（密码二次确认弹窗）；删除所有同步码文案
+- `stores/sync.ts`：token 存 `shiyin-sync-token`（+ `shiyin-sync-username`），`register/login/logout/deleteAccount` 替换 `generateCode/bindCode/rotateCode/deleteRemote/unbind`；同步引擎（防抖 push、启动/前台 pull、首次合并）不变
+- `api.ts`：`syncApi` 改 Bearer；错误映射更新（409 用户名已存在、401 区分密码错误/登录过期、400 用户名/密码格式）；`apiDelete` 支持 body
 
 **验证证据**
 | 检查 | 结果 |
 |---|---|
-| api `tsc --noEmit` | ✅ 零错误（含 Hono Variables 泛型修正） |
+| api `tsc --noEmit` | ✅ 零错误 |
 | web `vue-tsc --noEmit` | ✅ 零错误 |
 | web `npm run build` | ✅ 通过（仅既有 chunk 体积警告） |
-| api 启动（无 DB） | ✅ migrate 跳过并打印提示；`/api/health` 200；`/api/sync/code` → 503；`/api/sync/pull` 无码 → 503（先于 401 的 503 降级） |
-| `bash -n deploy.sh` + 模板替换 | ✅ 无残留占位符，`EnvironmentFile=-/srv/shiyin/api/db.env` 正确 |
-| **真实 MySQL 实测** | ❌ 未做——本机无 docker。全部 SQL 为标准 MySQL 8 语法（`INSERT … AS new ON DUPLICATE KEY UPDATE` 需 8.0.19+，Oracle HeatWave 满足），已逐条走查 |
+| password 模块直测 | ✅ 格式正确；正确密码 true；错误/畸形 false |
+| api 启动（无 DB） | ✅ `/api/sync/status` → `{"db":"unconfigured"}`；`POST /api/sync/register` → 503；`POST /api/sync/login` → 503；`/pull` 无 token → 503 |
+| **真实 MySQL 实测** | ❌ 未做——本机无 docker。SQL 为标准 MySQL 8（`INSERT … AS new` 需 8.0.19+，Oracle HeatWave 满足）。上线后建议完整走一遍 register→login→push→pull→logout |
 
 **剩余手动步骤**
-1. Oracle Cloud MySQL：建库建用户，对 API 服务器公网 IP 放行 3306 入站，确认实例启用 SSL；如服务端 CA 不在系统 CA 池内，把 CA 文件放到服务器并传 `--db-ssl-ca`
-2. push 后 CI 发版，服务器 `deploy.sh --download --db-host …` 重部署（会 restart 服务）
-3. 设备 A 设置页生成同步码 → 设备 B 输入绑定 → 验证订阅/进度互相同步
+1. push 后 CI 发版，服务器 `deploy.sh --download --db-host … --db-ssl-verify=false` 重部署（会 restart 服务，启动时自动建库建表；旧同步码表如存在会被 DROP）
+2. `GET /api/sync/status` → `{"db":"ok"}` 后，在设置页注册账号 → 另一台设备登录 → 验证订阅/进度互相同步
+3. 注意：旧同步码身份已废弃，如之前生成过同步码，需重新注册账号
 
 ## 已知事项（未返工，需后续确认）
 

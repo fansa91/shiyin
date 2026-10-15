@@ -96,7 +96,7 @@ const sync = useSyncStore()
 const dockMount = ref<HTMLElement | null>(null)
 onMounted(() => {
   if (dockMount.value) player.registerDock(dockMount.value)
-  // 已绑定同步码: 启动时增量拉取云端数据
+  // 已登录: 启动时增量拉取云端数据
   sync.startup()
 })
 

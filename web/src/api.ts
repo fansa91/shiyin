@@ -28,8 +28,16 @@ async function apiPost<T>(
   return r.json()
 }
 
-async function apiDelete<T>(path: string, headers?: Record<string, string>): Promise<T> {
-  const r = await fetch(`/api${path}`, { method: 'DELETE', headers })
+async function apiDelete<T>(
+  path: string,
+  headers?: Record<string, string>,
+  body?: unknown,
+): Promise<T> {
+  const r = await fetch(`/api${path}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
   if (!r.ok) {
     const b = await r.json().catch(() => null)
     throw syncError(r.status, b?.error)
@@ -39,7 +47,17 @@ async function apiDelete<T>(path: string, headers?: Record<string, string>): Pro
 
 /** 同步接口的错误翻译成中文 */
 function syncError(status: number, detail?: string): Error {
-  if (status === 401) return new Error('同步码无效, 请检查后重试')
+  if (status === 409) return new Error('用户名已存在, 请换一个')
+  if (status === 401) {
+    if (detail === 'bad_credentials') return new Error('用户名或密码错误')
+    if (detail === 'token_expired' || detail === 'invalid_token' || detail === 'missing_token')
+      return new Error('登录已过期, 请重新登录')
+    return new Error('未登录或登录已过期')
+  }
+  if (status === 400) {
+    if (detail === 'bad_username') return new Error('用户名需 3-32 位字母/数字/_/-')
+    if (detail === 'weak_password') return new Error('密码至少 8 位')
+  }
   if (status === 429) return new Error('请求太频繁, 请稍后再试')
   if (status === 503) return new Error('后端未配置数据库, 云端同步不可用')
   return new Error(detail || `请求失败: ${status}`)
@@ -145,7 +163,7 @@ export const itunes = {
     ),
 }
 
-/* ---------------- 云端同步 (需 x-sync-code 请求头) ---------------- */
+/* ---------------- 云端同步 (需 Authorization: Bearer <token>) ---------------- */
 
 export interface SyncSubRow {
   feed_key: string
@@ -199,21 +217,26 @@ export interface SyncPushBody {
   settings: { data: Record<string, unknown>; updated_at: number }
 }
 
-const syncHeaders = (code: string) => ({ 'x-sync-code': code })
+const authHeaders = (token: string) => ({ Authorization: `Bearer ${token}` })
 
 export const syncApi = {
-  /** 生成同步码 (明文只返回这一次) */
-  createCode: () => apiPost<{ code: string }>('/sync/code'),
-  /** 换码: 旧码立即作废 */
-  rotate: (code: string) => apiPost<{ code: string }>('/sync/rotate', undefined, syncHeaders(code)),
-  /** 删除云端身份及全部数据 */
-  remove: (code: string) => apiDelete<{ ok: boolean }>('/sync/code', syncHeaders(code)),
+  /** 注册 -> {token}, 直接登录态 */
+  register: (username: string, password: string) =>
+    apiPost<{ token: string }>('/sync/register', { username, password }),
+  /** 登录 -> {token} */
+  login: (username: string, password: string) =>
+    apiPost<{ token: string }>('/sync/login', { username, password }),
+  /** 注销当前 token */
+  logout: (token: string) => apiPost<{ ok: boolean }>('/sync/logout', undefined, authHeaders(token)),
+  /** 删除账号及全部云端数据 (需密码二次校验) */
+  deleteAccount: (token: string, password: string) =>
+    apiDelete<{ ok: boolean }>('/sync/account', authHeaders(token), { password }),
   /** 增量拉取 */
-  pull: (code: string, since: number) =>
-    apiGet<SyncPullResult>(`/sync/pull?since=${since}`, syncHeaders(code)),
+  pull: (token: string, since: number) =>
+    apiGet<SyncPullResult>(`/sync/pull?since=${since}`, authHeaders(token)),
   /** 增量推送 */
-  push: (code: string, body: SyncPushBody) =>
-    apiPost<{ ok: boolean; server_time: number }>('/sync/push', body, syncHeaders(code)),
+  push: (token: string, body: SyncPushBody) =>
+    apiPost<{ ok: boolean; server_time: number }>('/sync/push', body, authHeaders(token)),
 }
 
 /* ---------------- 小工具 ---------------- */

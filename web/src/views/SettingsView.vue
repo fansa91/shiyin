@@ -71,45 +71,39 @@
 
         <div v-if="!sync.bound">
           <div class="text-body-2 text-medium-emphasis mb-3">
-            用同步码在多设备间同步订阅、稍后听、播放进度和设置。无需注册，同步码即身份凭证，请妥善保存。
+            登录后在多设备间同步订阅、稍后听、播放进度和设置。密码经加盐哈希存储，服务端不存明文。
           </div>
-          <v-btn color="primary" variant="tonal" :loading="genLoading" @click="onGenerate">
-            生成同步码
+          <v-tabs v-model="authTab" density="compact" class="mb-3">
+            <v-tab value="login">登录</v-tab>
+            <v-tab value="register">注册</v-tab>
+          </v-tabs>
+          <v-text-field
+            v-model="username"
+            label="用户名（3-32 位字母/数字/_/-）"
+            variant="outlined"
+            density="comfortable"
+            class="mb-3"
+            :disabled="authLoading"
+            @keyup.enter="onAuth"
+          />
+          <v-text-field
+            v-model="password"
+            label="密码（至少 8 位）"
+            type="password"
+            variant="outlined"
+            density="comfortable"
+            :disabled="authLoading"
+            @keyup.enter="onAuth"
+          />
+          <v-btn color="primary" :loading="authLoading" @click="onAuth" class="mt-1">
+            {{ authTab === 'login' ? '登录' : '注册并登录' }}
           </v-btn>
-          <template v-if="newCode">
-            <v-text-field
-              :model-value="newCode"
-              label="你的同步码（只显示一次）"
-              readonly
-              variant="outlined"
-              density="comfortable"
-              class="mt-4"
-              append-inner-icon="mdi-content-copy"
-              @click:append-inner="copyText(newCode)"
-            />
-            <v-alert type="warning" variant="tonal" density="compact" class="text-body-2">
-              同步码只显示这一次，请立即复制保存。丢失后云端数据无法找回。
-            </v-alert>
-          </template>
-
-          <v-divider class="my-4" />
-          <div class="text-body-2 mb-2">已有同步码？输入绑定</div>
-          <div class="d-flex gap-2">
-            <v-text-field
-              v-model="inputCode"
-              label="同步码"
-              variant="outlined"
-              density="comfortable"
-              class="flex-grow-1"
-              :disabled="bindLoading"
-            />
-            <v-btn color="primary" :loading="bindLoading" @click="onBind">绑定</v-btn>
-          </div>
         </div>
 
         <div v-else>
           <div class="d-flex align-center gap-2 mb-3 flex-wrap">
-            <v-chip color="success" size="small">已绑定</v-chip>
+            <v-chip color="success" size="small">已登录</v-chip>
+            <span class="text-body-2">{{ sync.username }}</span>
             <span class="text-body-2 text-medium-emphasis">上次同步：{{ lastSyncText }}</span>
             <v-progress-circular v-if="sync.syncing" indeterminate size="18" width="2" />
           </div>
@@ -118,50 +112,35 @@
           </v-alert>
           <div class="d-flex gap-2 flex-wrap">
             <v-btn variant="tonal" :loading="sync.syncing" @click="onSyncNow">立即同步</v-btn>
-            <v-btn variant="tonal" @click="onRotate">换码</v-btn>
-            <v-btn variant="tonal" @click="sync.unbind()">解绑</v-btn>
-            <v-btn variant="text" color="error" @click="showDelete = true">删除云端数据</v-btn>
+            <v-btn variant="tonal" @click="onLogout" :loading="logoutLoading">退出登录</v-btn>
+            <v-btn variant="text" color="error" @click="showDelete = true">删除账号</v-btn>
           </div>
           <div class="text-caption text-medium-emphasis mt-3">
-            解绑只断开本机，本地数据保留；换码后旧码立即作废，需在其他设备重新绑定。
+            退出登录只断开本机，本地数据保留；删除账号会清空该账号的全部云端数据。
           </div>
         </div>
       </v-card-text>
     </v-card>
 
-    <v-dialog v-model="showRotated" max-width="440">
-      <v-card>
-        <v-card-title class="text-subtitle-1 font-weight-bold">新同步码</v-card-title>
-        <v-card-text>
-          <v-text-field
-            :model-value="rotatedCode"
-            readonly
-            variant="outlined"
-            density="comfortable"
-            append-inner-icon="mdi-content-copy"
-            @click:append-inner="copyText(rotatedCode)"
-          />
-          <div class="text-body-2 text-medium-emphasis">
-            旧码已作废。请在其他设备上用新码重新绑定。
-          </div>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn color="primary" @click="showRotated = false">知道了</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
-
     <v-dialog v-model="showDelete" max-width="440">
       <v-card>
-        <v-card-title class="text-subtitle-1 font-weight-bold">删除云端数据？</v-card-title>
+        <v-card-title class="text-subtitle-1 font-weight-bold">删除账号？</v-card-title>
         <v-card-text class="text-body-2">
-          将删除该同步码对应的全部云端数据（订阅、稍后听、播放进度、设置），本地数据不受影响。此操作不可撤销。
+          <div class="mb-3">
+            将删除账号「{{ sync.username }}」的全部云端数据（订阅、稍后听、播放进度、设置），本地数据不受影响。此操作不可撤销。
+          </div>
+          <v-text-field
+            v-model="deletePassword"
+            label="输入密码确认"
+            type="password"
+            variant="outlined"
+            density="comfortable"
+          />
         </v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn variant="text" @click="showDelete = false">取消</v-btn>
-          <v-btn color="error" :loading="delLoading" @click="onDeleteRemote">删除</v-btn>
+          <v-btn color="error" :loading="delLoading" @click="onDeleteAccount">删除</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -194,7 +173,7 @@ const sync = useSyncStore()
 const themeItems = [
   { value: 'system', title: '跟随系统' },
   { value: 'light', title: '浅色' },
-  { value: 'dark', title: '深色' },
+  { value: 'dark', title: '暗色' },
 ]
 const speedItems = SPEEDS.map((s) => ({ value: s, title: `${s}x` }))
 const seedPresets = ['#6750A4', '#0061A4', '#00696E', '#4C662B', '#8C4A60', '#96590B', '#B3261E']
@@ -215,49 +194,33 @@ onMounted(checkHealth)
 
 /* ---------------- 云端同步 ---------------- */
 
-const newCode = ref('')
-const inputCode = ref('')
-const genLoading = ref(false)
-const bindLoading = ref(false)
+const authTab = ref<'login' | 'register'>('login')
+const username = ref('')
+const password = ref('')
+const authLoading = ref(false)
+const logoutLoading = ref(false)
 const delLoading = ref(false)
 const opError = ref('')
 const showDelete = ref(false)
-const showRotated = ref(false)
-const rotatedCode = ref('')
+const deletePassword = ref('')
 
 const lastSyncText = computed(() => (sync.lastSyncAt ? timeAgo(sync.lastSyncAt) : '从未'))
 
-async function copyText(t: string) {
-  try {
-    await navigator.clipboard.writeText(t)
-  } catch {
-    /* 剪贴板不可用时用户手动复制 */
-  }
-}
-
-async function onGenerate() {
+async function onAuth() {
   opError.value = ''
-  genLoading.value = true
+  authLoading.value = true
   try {
-    newCode.value = await sync.generateCode()
+    if (authTab.value === 'register') {
+      await sync.register(username.value, password.value)
+    } else {
+      await sync.login(username.value, password.value)
+    }
+    username.value = ''
+    password.value = ''
   } catch (e: any) {
-    opError.value = e?.message ?? '生成失败'
+    opError.value = e?.message ?? (authTab.value === 'register' ? '注册失败' : '登录失败')
   } finally {
-    genLoading.value = false
-  }
-}
-
-async function onBind() {
-  opError.value = ''
-  bindLoading.value = true
-  try {
-    await sync.bindCode(inputCode.value)
-    inputCode.value = ''
-    newCode.value = ''
-  } catch (e: any) {
-    opError.value = e?.message ?? '绑定失败'
-  } finally {
-    bindLoading.value = false
+    authLoading.value = false
   }
 }
 
@@ -271,21 +234,25 @@ async function onSyncNow() {
   }
 }
 
-async function onRotate() {
+async function onLogout() {
   opError.value = ''
+  logoutLoading.value = true
   try {
-    rotatedCode.value = await sync.rotateCode()
-    showRotated.value = true
+    await sync.logout()
   } catch (e: any) {
-    opError.value = e?.message ?? '换码失败'
+    opError.value = e?.message ?? '退出失败'
+  } finally {
+    logoutLoading.value = false
   }
 }
 
-async function onDeleteRemote() {
+async function onDeleteAccount() {
+  opError.value = ''
   delLoading.value = true
   try {
-    await sync.deleteRemote()
+    await sync.deleteAccount(deletePassword.value)
     showDelete.value = false
+    deletePassword.value = ''
   } catch (e: any) {
     opError.value = e?.message ?? '删除失败'
   } finally {
