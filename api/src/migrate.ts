@@ -5,7 +5,8 @@
  * 全部标准 MySQL 8 语法: InnoDB + utf8mb4, 外键级联删除。
  * updated_at 统一存毫秒时间戳 (BIGINT), 由客户端上报, last-write-wins 依据。
  */
-import { getPool, dbConfigured } from './db.js'
+import { getPool, dbConfigured, getServerConfig } from './db.js'
+import mysql from 'mysql2/promise'
 
 const DDL: string[] = [
   `CREATE TABLE IF NOT EXISTS sync_identities (
@@ -72,11 +73,42 @@ const DDL: string[] = [
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 ]
 
+/** 库名白名单: 防注入, 插值进 SQL 前必须校验 */
+const DB_NAME_RE = /^[A-Za-z0-9_]+$/
+
+/**
+ * 库不存在则自动建库 (CREATE DATABASE IF NOT EXISTS, 幂等)。
+ * 用不带 database 的临时连接, 复用同一 host/port/user/password/ssl 配置。
+ * 库名非法直接抛错拒绝; 建库失败 (如用户无 CREATE 权限) 由调用方捕获打日志,
+ * 继续原有建表流程 (migrate 失败不致命)。
+ */
+async function ensureDatabase(name: string): Promise<void> {
+  const conn = await mysql.createConnection(getServerConfig())
+  try {
+    await conn.query(
+      `CREATE DATABASE IF NOT EXISTS \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+    )
+    console.log(`[shiyin] 数据库 ${name} 就绪`)
+  } finally {
+    await conn.end()
+  }
+}
+
 /** 建表成功返回 true; 未配置返回 false; 连接失败抛异常 (调用方决定是否致命) */
 export async function migrate(): Promise<boolean> {
   if (!dbConfigured()) {
     console.log('[shiyin] SHIYIN_DB_HOST 未设置, 跳过建表, 云端同步接口将返回 503')
     return false
+  }
+  const dbName = process.env.SHIYIN_DB_NAME
+  if (!dbName || !DB_NAME_RE.test(dbName)) {
+    throw new Error(`[shiyin] 非法的 SHIYIN_DB_NAME: ${JSON.stringify(dbName ?? '')}, 只允许字母/数字/下划线`)
+  }
+  try {
+    await ensureDatabase(dbName)
+  } catch (e) {
+    // 建库失败不致命 (如用户无 CREATE 权限), 继续原有建表流程
+    console.warn('[shiyin] 自动建库失败, 继续建表:', (e as Error).message)
   }
   const pool = getPool()!
   for (const sql of DDL) {

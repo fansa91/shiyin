@@ -28,11 +28,33 @@ export function dbConfigured(): boolean {
   return configured
 }
 
+/** SSL 配置 (纯函数)。默认开启且校验服务端证书; "false" 关闭校验 (降级选项)。 */
+function sslConfig() {
+  const caPath = process.env.SHIYIN_DB_SSL_CA
+  // "false" 关闭证书校验: 降级选项, 有中间人风险, 仅建议自建内网/可信网络使用
+  const verify = (process.env.SHIYIN_DB_SSL_VERIFY ?? 'true').toLowerCase() !== 'false'
+  return !verify
+    ? { rejectUnauthorized: false }
+    : caPath
+      ? { ca: fs.readFileSync(caPath), rejectUnauthorized: true }
+      : { rejectUnauthorized: true }
+}
+
+/** 建库等管理操作用的连接配置: 不带 database, 其余同连接池 */
+export function getServerConfig(): mysql.ConnectionOptions {
+  return {
+    host: process.env.SHIYIN_DB_HOST,
+    port: Number(process.env.SHIYIN_DB_PORT ?? 3306),
+    user: process.env.SHIYIN_DB_USER,
+    password: process.env.SHIYIN_DB_PASSWORD,
+    ssl: sslConfig(),
+  }
+}
+
 /** 未配置返回 null, 调用方据此返回 503, 不抛异常 */
 export function getPool(): mysql.Pool | null {
   if (!dbConfigured()) return null
   if (!pool) {
-    const caPath = process.env.SHIYIN_DB_SSL_CA
     // "false" 关闭证书校验: 降级选项, 有中间人风险, 仅建议自建内网/可信网络使用
     const verify = (process.env.SHIYIN_DB_SSL_VERIFY ?? 'true').toLowerCase() !== 'false'
     if (!verify) console.warn('[db] WARNING: SHIYIN_DB_SSL_VERIFY=false, 跳过服务端证书校验')
@@ -43,11 +65,7 @@ export function getPool(): mysql.Pool | null {
       password: process.env.SHIYIN_DB_PASSWORD,
       database: process.env.SHIYIN_DB_NAME,
       // 默认校验服务端证书; 有 CA 文件则显式加载; 关闭校验时直接放行
-      ssl: !verify
-        ? { rejectUnauthorized: false }
-        : caPath
-          ? { ca: fs.readFileSync(caPath), rejectUnauthorized: true }
-          : { rejectUnauthorized: true },
+      ssl: sslConfig(),
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
