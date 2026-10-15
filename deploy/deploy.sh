@@ -29,6 +29,7 @@ DB_USER=""
 DB_PASSWORD=""
 DB_NAME=""
 DB_SSL_CA=""
+DB_SSL_VERIFY="true"
 
 usage() {
   cat <<'EOF'
@@ -54,6 +55,7 @@ usage() {
   --db-password MySQL 密码
   --db-name   MySQL 库名
   --db-ssl-ca MySQL CA 证书路径 (可选, 默认用系统 CA 校验)
+  --db-ssl-verify 是否校验 MySQL 服务端证书 (默认 true; 传 false 关闭校验, 有中间人风险, 仅可信网络用)
 
 Caddy 请手动配置, 参考 deploy/Caddyfile (注意把 /api 反代到 --port)
 云端同步: Oracle Cloud MySQL 需对本机 IP 放行 3306 入站并启用 SSL
@@ -77,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --db-password) DB_PASSWORD="$2"; shift 2 ;;
     --db-name)     DB_NAME="$2";     shift 2 ;;
     --db-ssl-ca)   DB_SSL_CA="$2";   shift 2 ;;
+    --db-ssl-verify) DB_SSL_VERIFY="$2"; shift 2 ;;
     -h|--help)  usage; exit 0 ;;
     *) echo "未知参数: $1"; usage; exit 1 ;;
   esac
@@ -168,6 +171,7 @@ if [[ -n "$DB_HOST" ]]; then
     [[ -n "$DB_PASSWORD" ]] && echo "SHIYIN_DB_PASSWORD=$DB_PASSWORD"
     [[ -n "$DB_NAME" ]] && echo "SHIYIN_DB_NAME=$DB_NAME"
     [[ -n "$DB_SSL_CA" ]] && echo "SHIYIN_DB_SSL_CA=$DB_SSL_CA"
+    echo "SHIYIN_DB_SSL_VERIFY=$DB_SSL_VERIFY"
   } > "$DB_ENV"
   chmod 600 "$DB_ENV"
   if [[ "$USER" != "root" ]]; then

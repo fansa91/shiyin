@@ -9,6 +9,7 @@
  *   DELETE /api/sync/code    删除身份及全部云端数据 (需 x-sync-code)
  *   GET    /api/sync/pull?since=<ms>   增量拉取 (需 x-sync-code)
  *   POST   /api/sync/push    增量推送 (需 x-sync-code)
+ *   GET    /api/sync/status  数据库连通性诊断 (免鉴权)
  *
  * 合并语义: 所有行按 updated_at(毫秒) last-write-wins;
  * 删除用 deleted=1 墓碑行传播, pull 会把墓碑一并返回。
@@ -31,6 +32,17 @@ const sha256hex = (s: string): string => createHash('sha256').update(s, 'utf8').
 /** 32 字符 url-safe 随机码: 24 字节 -> base64url 恰好 32 字符 */
 function genCode(): string {
   return randomBytes(24).toString('base64url')
+}
+
+/**
+ * DB 错误统一返回: 只暴露 err.code (如 ECONNREFUSED / ETIMEDOUT /
+ * ER_ACCESS_DENIED_ERROR / ER_NO_SUCH_TABLE), 绝不暴露 err.message / sql / 配置。
+ * 完整错误打服务端日志。
+ */
+function dbError(c: Context<{ Variables: SyncVars }>, err: unknown) {
+  console.error('[sync] db error:', err)
+  const code = (err as { code?: unknown } | null)?.code
+  return c.json({ error: 'db_error', code: typeof code === 'string' ? code : 'unknown' }, 500)
 }
 
 /* ---------------- 限流: pull/push 同 IP 1 分钟最多 30 次 ---------------- */
@@ -67,15 +79,35 @@ async function requireIdentity(c: Context<{ Variables: SyncVars }>, next: Next) 
   if (!pool) return c.json({ error: 'sync not configured (missing SHIYIN_DB_*)' }, 503)
   const code = (c.req.header('x-sync-code') ?? '').trim()
   if (!code) return c.json({ error: 'missing x-sync-code' }, 401)
-  const [rows] = await pool.query('SELECT id FROM sync_identities WHERE code_hash = ?', [
-    sha256hex(code),
-  ])
+  let rows: unknown
+  try {
+    ;[rows] = await pool.query('SELECT id FROM sync_identities WHERE code_hash = ?', [
+      sha256hex(code),
+    ])
+  } catch (e) {
+    return dbError(c, e)
+  }
   const id = (rows as any[])[0]?.id
   if (!id) return c.json({ error: 'invalid sync code' }, 401)
   c.set('pool', pool)
   c.set('identityId', Number(id))
   await next()
 }
+
+/* ---------------- 状态诊断 (免鉴权) ---------------- */
+
+sync.get('/status', async (c) => {
+  const pool = getPool()
+  if (!pool) return c.json({ db: 'unconfigured' })
+  try {
+    await pool.query('SELECT 1')
+    return c.json({ db: 'ok' })
+  } catch (e) {
+    // 完整错误只打服务端日志, 不暴露给客户端
+    console.error('[sync/status] db ping failed:', e)
+    return c.json({ db: 'error' })
+  }
+})
 
 /* ---------------- 建码 / 换码 / 删除 ---------------- */
 
@@ -90,7 +122,7 @@ sync.post('/code', async (c) => {
       return c.json({ code })
     } catch (e: any) {
       if (e?.code === 'ER_DUP_ENTRY') continue
-      throw e
+      return dbError(c, e)
     }
   }
   return c.json({ error: 'please retry' }, 500)
@@ -109,7 +141,7 @@ sync.post('/rotate', requireIdentity, async (c) => {
       return c.json({ code })
     } catch (e: any) {
       if (e?.code === 'ER_DUP_ENTRY') continue
-      throw e
+      return dbError(c, e)
     }
   }
   return c.json({ error: 'please retry' }, 500)
@@ -119,7 +151,11 @@ sync.delete('/code', requireIdentity, async (c) => {
   const pool: Pool = c.get('pool')
   const identityId: number = c.get('identityId')
   // 外键 ON DELETE CASCADE 级联清掉该身份全部数据
-  await pool.query('DELETE FROM sync_identities WHERE id = ?', [identityId])
+  try {
+    await pool.query('DELETE FROM sync_identities WHERE id = ?', [identityId])
+  } catch (e) {
+    return dbError(c, e)
+  }
   return c.json({ ok: true })
 })
 
@@ -132,6 +168,7 @@ sync.get('/pull', requireIdentity, async (c) => {
   const since = Number(c.req.query('since') ?? 0)
   if (!Number.isFinite(since) || since < 0) return c.json({ error: 'bad since' }, 400)
 
+  try {
   const [subs] = await pool.query(
     'SELECT feed_key, feed_url, title, author, image, updated_at, deleted FROM subscriptions WHERE identity_id = ? AND updated_at > ?',
     [identityId, since],
@@ -169,6 +206,9 @@ sync.get('/pull', requireIdentity, async (c) => {
       listen_later: laterRows.filter((r) => r.deleted).map((r) => r.episode_key),
     },
   })
+  } catch (e) {
+    return dbError(c, e)
+  }
 })
 
 /* ---------------- 推送 ---------------- */
@@ -298,8 +338,12 @@ sync.post('/push', requireIdentity, async (c) => {
     await conn.commit()
     return c.json({ ok: true, server_time: Date.now() })
   } catch (e: any) {
-    await conn.rollback()
-    throw e
+    try {
+      await conn.rollback()
+    } catch {
+      /* 回滚失败也不掩盖原始异常, 继续返回 DB 错误 */
+    }
+    return dbError(c, e)
   } finally {
     conn.release()
   }

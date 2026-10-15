@@ -65,8 +65,9 @@ sha256), 无需注册; 丢失后云端数据无法找回, 可随时换码/解绑
 | `SHIYIN_DB_PASSWORD` | 是 | 密码 |
 | `SHIYIN_DB_NAME` | 是 | 库名 |
 | `SHIYIN_DB_SSL_CA` | 否 | CA 证书文件路径 (服务端 CA 不在系统 CA 池内时必填, 如 Oracle 自签 CA) |
+| `SHIYIN_DB_SSL_VERIFY` | 否 | 是否校验服务端证书, 默认 `true`。设为 `false` 关闭校验 (降级选项, 有中间人风险, 仅建议自建内网/可信网络使用; 如 Oracle MySQL 自签证书链报 HANDSHAKE_SSL_ERROR 时可临时关闭) |
 
-SSL 默认开启并校验服务端证书。部署时用 deploy.sh 的 `--db-host/--db-port/--db-user/--db-password/--db-name/--db-ssl-ca`
+SSL 默认开启并校验服务端证书。部署时用 deploy.sh 的 `--db-host/--db-port/--db-user/--db-password/--db-name/--db-ssl-ca/--db-ssl-verify`
 参数传入, 会写入 `<dir>/api/db.env` (0600 权限) 并由 systemd 加载。
 Oracle Cloud MySQL: 需在安全列表中对 API 服务器 IP 放行 3306 入站, 并确认实例启用了 SSL。
 
