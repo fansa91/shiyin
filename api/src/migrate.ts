@@ -12,10 +12,6 @@ import { getPool, dbConfigured, getServerConfig } from './db.js'
 import mysql from 'mysql2/promise'
 
 const DDL: string[] = [
-  // 历史残留: sync_identities 是已废弃的同步码方案的表, 从未在用户库建成功过,
-  // 先清掉避免残留 (若旧四表曾引用它, DROP 会因外键失败, 此时需手动处理)。
-  `DROP TABLE IF EXISTS sync_identities`,
-
   `CREATE TABLE IF NOT EXISTS users (
     id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(64) NOT NULL UNIQUE,
@@ -95,6 +91,41 @@ const DDL: string[] = [
 const DB_NAME_RE = /^[A-Za-z0-9_]+$/
 
 /**
+ * 清理废弃的同步码方案残留表 (过渡逻辑)。
+ *
+ * 背景: 同步码方案从未在线上真正跑通 (migrate 因 SSL 失败, 表没建全就报废了),
+ * 残留的旧表 (subscriptions/listen_later/progress/settings 带 identity_id 外键
+ * 指向 sync_identities) 无真实用户数据, 可安全删除。
+ *
+ * 检测: 若 `subscriptions` 表存在 `identity_id` 列 → 判定为旧 schema, 按依赖
+ * 顺序 (子表先删) 逐个 DROP; 否则跳过, 绝不碰新 schema 或空库的数据。
+ */
+async function dropLegacySyncCodeSchema(pool: mysql.Pool): Promise<void> {
+  const [rows] = await pool.query(
+    `SELECT COUNT(*) AS n FROM information_schema.columns
+     WHERE table_schema = DATABASE() AND table_name = 'subscriptions' AND column_name = 'identity_id'`
+  )
+  const hasLegacy = Number((rows as Array<{ n: unknown }>)[0]?.n ?? 0) > 0
+  if (!hasLegacy) {
+    console.log('[shiyin] 未检测到旧同步码 schema, 跳过残留清理')
+    return
+  }
+  console.log('[shiyin] 检测到旧同步码 schema (identity_id), 删除残留表')
+  const legacyTables = [
+    'settings',
+    'progress',
+    'listen_later',
+    'subscriptions',
+    'sessions',
+    'sync_identities',
+  ]
+  for (const t of legacyTables) {
+    await pool.query(`DROP TABLE IF EXISTS \`${t}\``)
+  }
+  console.log('[shiyin] 旧同步码残留表已清理')
+}
+
+/**
  * 库不存在则自动建库 (CREATE DATABASE IF NOT EXISTS, 幂等)。
  * 用不带 database 的临时连接, 复用同一 host/port/user/password/ssl 配置。
  * 库名非法直接抛错拒绝; 建库失败 (如用户无 CREATE 权限) 由调用方捕获打日志,
@@ -129,6 +160,8 @@ export async function migrate(): Promise<boolean> {
     console.warn('[shiyin] 自动建库失败, 继续建表:', (e as Error).message)
   }
   const pool = getPool()!
+  // 废弃同步码 schema 过渡清理 (检测 identity_id, 新 schema/空库不受影响)
+  await dropLegacySyncCodeSchema(pool)
   for (const sql of DDL) {
     await pool.query(sql)
   }
