@@ -1,0 +1,15 @@
+# 把 listen.example.com 换成你的域名. Caddy 需要手动安装配置,
+# deploy.sh 不会自动处理反代.
+listen.example.com {
+	root * /srv/shiyin/web
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	handle {
+		# SPA history 路由: 刷新不 404
+		try_files {path} /index.html
+		file_server
+	}
+}

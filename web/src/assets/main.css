@@ -1,0 +1,19 @@
+/* 全局样式 + shikwasa 播放器的 M3 结构微调 (动态颜色由 player store 按 Vuetify 主题写入 CSS 变量) */
+
+html {
+  font-family: 'Roboto', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+/* shikwasa: 章节面板 / 按钮圆角向 M3 靠拢 */
+.shk-mount .shk-btn {
+  border-radius: 50%;
+}
+
+.shk-mount .shk-chapter_main {
+  border-radius: 16px;
+}
+
+/* 迷你播放器展开时的页面滚动条 */
+.player-overlay::-webkit-scrollbar {
+  width: 0;
+}

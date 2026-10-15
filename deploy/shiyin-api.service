@@ -1,0 +1,16 @@
+[Unit]
+Description=ShiYin Podcast API
+After=network.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@/api
+ExecStart=@NODE@ dist/index.js
+Environment=NODE_ENV=production
+Environment=PORT=@PORT@
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
