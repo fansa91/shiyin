@@ -26,7 +26,10 @@ export const usePlayerStore = defineStore('player', () => {
   const ready = ref(false)
 
   let player: Player | null = null
-  let containerEl: HTMLElement | null = null
+  /** 底部播放坞挂载点 (App.vue, 常驻) */
+  let dockEl: HTMLElement | null = null
+  /** 展开视图挂载点 (PlayerOverlay, 常驻) */
+  let expandedEl: HTMLElement | null = null
   /** 断点续播: metadata 就绪后要跳到的秒数 */
   let pendingSeek = 0
   let lastSave = 0
@@ -75,12 +78,32 @@ export const usePlayerStore = defineStore('player', () => {
   /* ---------- 对外 ---------- */
 
   /**
-   * 记下常驻的挂载容器 (PlayerOverlay 里的 div, v-show 切换显隐不卸载)。
-   * Player 实例本身在第一次播放时才创建, 因为构造时必须带有效音频 src
-   * (源码 initAudio: 无 src 就不创建 audio 元素, 后续 update 会崩)。
+   * 注册两个常驻挂载点 (v-show 切换显隐, DOM 不卸载)。
+   * 单例 Player 的根元素 (player.el) 在两者之间搬移, 不重建实例,
+   * 音频播放不中断。实例本身在第一次播放时才创建, 因为构造时必须
+   * 带有效音频 src (源码 initAudio: 无 src 就不创建 audio 元素, 后续 update 会崩)。
    */
-  function ensurePlayer(container: HTMLElement): void {
-    containerEl = container
+  function registerDock(el: HTMLElement): void {
+    dockEl = el
+    attachCurrent()
+  }
+  function registerExpanded(el: HTMLElement): void {
+    expandedEl = el
+    attachCurrent()
+  }
+
+  /** 把单例挂到当前应属的容器 (底部坞 / 展开视图) */
+  function attachCurrent(): void {
+    if (!player) return
+    const target = expanded.value ? expandedEl : dockEl
+    if (target && player.el.parentElement !== target) target.appendChild(player.el)
+  }
+
+  /** 展开 / 收起播放视图: 只搬移 DOM, 不重建 Player */
+  function setExpanded(v: boolean): void {
+    if (expanded.value === v) return
+    expanded.value = v
+    attachCurrent()
   }
 
   /** 延迟创建实例 */
@@ -93,9 +116,10 @@ export const usePlayerStore = defineStore('player', () => {
     chapters: { title: string; startTime: number; endTime: number }[]
   }): Player | null {
     if (player) return player
-    if (!containerEl) return null
+    const host = expanded.value ? expandedEl : dockEl
+    if (!host) return null
     const p = new Player({
-      container: containerEl,
+      container: host,
       audio,
       themeColor: '#6750A4',
       theme: 'auto',
@@ -138,6 +162,7 @@ export const usePlayerStore = defineStore('player', () => {
     })
     // 构造时 themeColor 会以内联样式覆盖 --color-primary, 建完立刻按当前主题重设
     if (lastColors) applyTheme(lastColors, lastDark)
+    attachCurrent()
     ready.value = true
     return p
   }
@@ -206,6 +231,7 @@ export const usePlayerStore = defineStore('player', () => {
     lastSave = 0
     // 新实例构造时已带入音频, 无需再 update; 老实例走 update 切换
     if (!wasFresh) p.update(audio)
+    attachCurrent()
     p.playbackRate = speed.value
     p.play()
   }
@@ -291,7 +317,9 @@ export const usePlayerStore = defineStore('player', () => {
     ready,
     hasPrev,
     hasNext,
-    ensurePlayer,
+    registerDock,
+    registerExpanded,
+    setExpanded,
     applyTheme,
     playEpisode,
     play,

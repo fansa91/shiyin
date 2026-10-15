@@ -65,17 +65,21 @@
       <router-view />
     </v-main>
 
-    <!-- 迷你播放条 + 全屏播放器 (常驻, 全局单例) -->
-    <MiniPlayer />
+    <!-- 底部播放坞: shikwasa 原生界面直接渲染 (常驻, 全局单例) -->
+    <div v-show="player.current && !player.expanded" class="player-dock">
+      <button class="dock-handle" aria-label="展开播放器" @click="player.setExpanded(true)">
+        <v-icon icon="mdi-chevron-up" size="18" />
+      </button>
+      <div ref="dockMount" class="shk-dock-mount" />
+    </div>
     <PlayerOverlay />
   </v-app>
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDisplay, useTheme } from 'vuetify'
-import MiniPlayer from './components/MiniPlayer.vue'
 import PlayerOverlay from './components/PlayerOverlay.vue'
 import { initTheme, themeIsDark } from './theme'
 import { usePlayerStore } from './stores/player'
@@ -85,6 +89,12 @@ const { mdAndUp, smAndDown, xlAndUp } = useDisplay()
 const route = useRoute()
 const router = useRouter()
 const player = usePlayerStore()
+
+/** 底部播放坞挂载点: 常驻 DOM, shikwasa 单例首次播放时挂载于此 */
+const dockMount = ref<HTMLElement | null>(null)
+onMounted(() => {
+  if (dockMount.value) player.registerDock(dockMount.value)
+})
 
 /** 960–1280px 显示图标 rail, ≥1280px 完整侧边栏 */
 const railMode = computed(() => mdAndUp.value && !xlAndUp.value)
@@ -127,13 +137,50 @@ function goTab(v: unknown) {
 .logo {
   cursor: pointer;
 }
-/* 迷你播放条浮在内容上, 给主内容留出底部空间 */
+/* 底部播放坞浮在内容上, 给主内容留出底部空间 */
 .has-mini .v-main__wrap {
-  padding-bottom: 88px;
+  padding-bottom: 176px;
+}
+/* shikwasa 原生播放器坞: M3 圆角卡片, 桌面端居中限宽 */
+.player-dock {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1005;
+  max-width: 760px;
+  margin: 0 auto;
+  background: rgb(var(--v-theme-surface-container-high));
+  border-radius: 20px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+/* 顶部展开条: 点击展开播放视图, 不遮挡 shikwasa 自己的按钮 */
+.dock-handle {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  padding: 3px 0 1px;
+  border: 0;
+  background: transparent;
+  color: rgb(var(--v-theme-on-surface-variant));
+  cursor: pointer;
+}
+/* shikwasa 原生播放器嵌在坞里: 去掉它自带的投影, 主题色由 store 的 CSS 变量同步 */
+.shk-dock-mount :deep(.shk-player) {
+  box-shadow: none;
+  margin-top: 0;
 }
 @media (max-width: 959px) {
   .has-mini .v-main__wrap {
-    padding-bottom: 152px;
+    padding-bottom: 208px;
+  }
+  /* 移动端: 底栏导航之上 */
+  .player-dock {
+    left: 8px;
+    right: 8px;
+    bottom: 84px;
+    border-radius: 16px;
   }
 }
 </style>
