@@ -68,6 +68,44 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAKmud4nQxmsCezgE5wv7a8K3GN+4Ocx1K+HHyKtTeAn
    ```
    然后按 `deploy/Caddyfile` 手动配 Caddy（把 `listen.example.com` 换成真实域名）
 
+## 云端同步（2026-10-15 新增，未推送）
+
+后端连 MySQL（用户 Oracle Cloud 免费实例，API 经公网 3306+SSL 连接），身份用同步码方案（无注册）。
+
+**api/ 新增**
+- `src/db.ts`：mysql2 连接池；读 `SHIYIN_DB_HOST/PORT/USER/PASSWORD/NAME`（`SHIYIN_DB_SSL_CA` 可选）；SSL 默认开启且校验服务端证书；未配置时返回 null，sync 接口降级 503，rss/charts 不受影响
+- `src/migrate.ts`：启动时幂等建表（InnoDB + utf8mb4，外键级联删除）；5 张表：`sync_identities` / `subscriptions` / `listen_later` / `progress` / `settings`
+- `src/syncKey.ts`：单集 key 规则（guid 优先，无 guid 时 audioUrl sha256），与前端 `web/src/utils/syncKey.ts` 同规则
+- `src/sync.ts`（挂载 `/api/sync`）：`POST /code`（32 字符 base64url 随机码，只存 sha256）、`POST /rotate`、`DELETE /code`（级联清数据）、`GET /pull?since=`（增量 + 墓碑，更新 last_seen）、`POST /push`（事务 + 行级 `IF(new.updated_at > old.updated_at)` newer-wins upsert，标准 MySQL 8 行别名写法 8.0.19+）；`x-sync-code` 认证（401）；pull/push 同 IP 1 分钟 30 次内存限流
+- `src/index.ts`：挂载路由 + 启动时 migrate（失败不致命）
+- **对任务 schema 的一处偏离**：`subscriptions` 加了 `feed_url TEXT`，`listen_later` 加了 `podcast_key`/`feed_url`，`progress` 加了 `title/podcast_title/artwork/audio_url/podcast_key/feed_url`——否则手动 RSS 订阅（feed_key='rss:hash' 无法反推 URL）和历史页元数据在跨设备恢复时会断裂
+
+**web/ 新增**
+- 设置页「云端同步」分组：生成同步码（只显示一次 + 复制）、输入码绑定、已绑定状态/上次同步时间、立即同步、换码、解绑（本地保留）、删除云端数据（二次确认）
+- `stores/sync.ts`（Pinia）：绑定后本地变更防抖 5s push；App 启动 + 回到前台 pull（since 增量）；首次绑定先 pull 再全量合并 push；冲突 last-write-wins；失败在设置页显示错误
+- `syncBus.ts` / `syncState.ts` / `syncTomb.ts`：变更通知总线、云端回写抑制标记、删除墓碑（取消订阅/移除稍后听记 deleted=1）
+- `library.ts` / `settings.ts`：写入钩子（emit + 墓碑 + settings updatedAt），云端回写时抑制
+- `api.ts`：`syncApi` 客户端（401/429/503 中文错误映射）
+
+**deploy/**
+- `deploy.sh` 新增 `--db-host/--db-port/--db-user/--db-password/--db-name/--db-ssl-ca`；有 `--db-host` 才写 `<dir>/api/db.env`（0600）；systemd 模板加 `EnvironmentFile=-@DIR@/api/db.env`（`-` 前缀可选；选 EnvironmentFile 而不用 Environment= 内联，避免密码出现在 `systemctl show`）
+- README.md：同步功能说明 + 环境变量表 + 部署示例
+
+**验证证据**
+| 检查 | 结果 |
+|---|---|
+| api `tsc --noEmit` | ✅ 零错误（含 Hono Variables 泛型修正） |
+| web `vue-tsc --noEmit` | ✅ 零错误 |
+| web `npm run build` | ✅ 通过（仅既有 chunk 体积警告） |
+| api 启动（无 DB） | ✅ migrate 跳过并打印提示；`/api/health` 200；`/api/sync/code` → 503；`/api/sync/pull` 无码 → 503（先于 401 的 503 降级） |
+| `bash -n deploy.sh` + 模板替换 | ✅ 无残留占位符，`EnvironmentFile=-/srv/shiyin/api/db.env` 正确 |
+| **真实 MySQL 实测** | ❌ 未做——本机无 docker。全部 SQL 为标准 MySQL 8 语法（`INSERT … AS new ON DUPLICATE KEY UPDATE` 需 8.0.19+，Oracle HeatWave 满足），已逐条走查 |
+
+**剩余手动步骤**
+1. Oracle Cloud MySQL：建库建用户，对 API 服务器公网 IP 放行 3306 入站，确认实例启用 SSL；如服务端 CA 不在系统 CA 池内，把 CA 文件放到服务器并传 `--db-ssl-ca`
+2. push 后 CI 发版，服务器 `deploy.sh --download --db-host …` 重部署（会 restart 服务）
+3. 设备 A 设置页生成同步码 → 设备 B 输入绑定 → 验证订阅/进度互相同步
+
 ## 已知事项（未返工，需后续确认）
 
 - 移动端真机音频后台播放未验证（shikwasa 的 MediaSession 在桌面 Chrome 逻辑上已接，真机待测）

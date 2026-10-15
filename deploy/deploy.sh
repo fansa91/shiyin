@@ -22,6 +22,13 @@ TAG="latest"
 USER="root"
 PORT="3001"
 NODE_BIN=""
+# 云端同步数据库 (可选, 不传则不同步相关环境变量, 后端 sync 接口返回 503)
+DB_HOST=""
+DB_PORT="3306"
+DB_USER=""
+DB_PASSWORD=""
+DB_NAME=""
+DB_SSL_CA=""
 
 usage() {
   cat <<'EOF'
@@ -41,8 +48,15 @@ usage() {
   --user      运行用户 (默认 root, 不存在会自动创建)
   --port      后端端口 (默认 3001, 与流影的 3000 共存)
   --node      node 可执行文件路径 (默认自动探测 command -v node)
+  --db-host   MySQL 主机 (云端同步用; 不传则不启用同步)
+  --db-port   MySQL 端口 (默认 3306)
+  --db-user   MySQL 用户名
+  --db-password MySQL 密码
+  --db-name   MySQL 库名
+  --db-ssl-ca MySQL CA 证书路径 (可选, 默认用系统 CA 校验)
 
 Caddy 请手动配置, 参考 deploy/Caddyfile (注意把 /api 反代到 --port)
+云端同步: Oracle Cloud MySQL 需对本机 IP 放行 3306 入站并启用 SSL
 EOF
 }
 
@@ -57,6 +71,12 @@ while [[ $# -gt 0 ]]; do
     --user)     USER="$2";     shift 2 ;;
     --port)     PORT="$2";     shift 2 ;;
     --node)     NODE_BIN="$2"; shift 2 ;;
+    --db-host)     DB_HOST="$2";     shift 2 ;;
+    --db-port)     DB_PORT="$2";     shift 2 ;;
+    --db-user)     DB_USER="$2";     shift 2 ;;
+    --db-password) DB_PASSWORD="$2"; shift 2 ;;
+    --db-name)     DB_NAME="$2";     shift 2 ;;
+    --db-ssl-ca)   DB_SSL_CA="$2";   shift 2 ;;
     -h|--help)  usage; exit 0 ;;
     *) echo "未知参数: $1"; usage; exit 1 ;;
   esac
@@ -135,6 +155,26 @@ if [[ "$USER" != "root" ]]; then
   chown -R "$USER:$USER" "$DIR"
 fi
 echo "后端 -> $DIR/api (端口 $PORT, 用户 $USER)"
+
+# 云端同步数据库配置 (可选): 只在给了 --db-host 时写 db.env,
+# systemd 用 EnvironmentFile=- 前缀按需加载 (文件不存在也不报错)。
+# 用 EnvironmentFile 而不用 Environment= 写密码: 避免密码出现在 systemctl show 输出里。
+if [[ -n "$DB_HOST" ]]; then
+  DB_ENV="$DIR/api/db.env"
+  {
+    echo "SHIYIN_DB_HOST=$DB_HOST"
+    echo "SHIYIN_DB_PORT=$DB_PORT"
+    [[ -n "$DB_USER" ]] && echo "SHIYIN_DB_USER=$DB_USER"
+    [[ -n "$DB_PASSWORD" ]] && echo "SHIYIN_DB_PASSWORD=$DB_PASSWORD"
+    [[ -n "$DB_NAME" ]] && echo "SHIYIN_DB_NAME=$DB_NAME"
+    [[ -n "$DB_SSL_CA" ]] && echo "SHIYIN_DB_SSL_CA=$DB_SSL_CA"
+  } > "$DB_ENV"
+  chmod 600 "$DB_ENV"
+  if [[ "$USER" != "root" ]]; then
+    chown "$USER:$USER" "$DB_ENV"
+  fi
+  echo "数据库配置 -> $DB_ENV (0600, 仅 $USER 可读)"
+fi
 
 # systemd
 sed -e "s|@DIR@|$DIR|g" -e "s|@USER@|$USER|g" -e "s|@PORT@|$PORT|g" -e "s|@NODE@|$NODE_BIN|g" \

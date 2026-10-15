@@ -9,6 +9,10 @@ WorkingDirectory=@DIR@/api
 ExecStart=@NODE@ dist/index.js
 Environment=NODE_ENV=production
 Environment=PORT=@PORT@
+# 云端同步数据库配置: deploy.sh 给了 --db-host 时才会生成此文件。
+# 前缀 "-" 表示可选, 文件不存在时不报错。用 EnvironmentFile 而不用
+# Environment= 内联密码, 避免密码出现在 `systemctl show` 输出里。
+EnvironmentFile=-@DIR@/api/db.env
 Restart=always
 RestartSec=5
 

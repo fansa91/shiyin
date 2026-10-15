@@ -2,13 +2,47 @@ import type { Chapter } from './models'
 
 /* ---------------- 后端 (同源 /api, 开发时经 vite proxy 转发) ---------------- */
 
-async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(`/api${path}`)
+async function apiGet<T>(path: string, headers?: Record<string, string>): Promise<T> {
+  const r = await fetch(`/api${path}`, { headers })
   if (!r.ok) {
     const body = await r.json().catch(() => null)
-    throw new Error(body?.error ?? `请求失败: ${r.status}`)
+    throw syncError(r.status, body?.error)
   }
   return r.json()
+}
+
+async function apiPost<T>(
+  path: string,
+  body?: unknown,
+  headers?: Record<string, string>,
+): Promise<T> {
+  const r = await fetch(`/api${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (!r.ok) {
+    const b = await r.json().catch(() => null)
+    throw syncError(r.status, b?.error)
+  }
+  return r.json()
+}
+
+async function apiDelete<T>(path: string, headers?: Record<string, string>): Promise<T> {
+  const r = await fetch(`/api${path}`, { method: 'DELETE', headers })
+  if (!r.ok) {
+    const b = await r.json().catch(() => null)
+    throw syncError(r.status, b?.error)
+  }
+  return r.json()
+}
+
+/** 同步接口的错误翻译成中文 */
+function syncError(status: number, detail?: string): Error {
+  if (status === 401) return new Error('同步码无效, 请检查后重试')
+  if (status === 429) return new Error('请求太频繁, 请稍后再试')
+  if (status === 503) return new Error('后端未配置数据库, 云端同步不可用')
+  return new Error(detail || `请求失败: ${status}`)
 }
 
 export interface RssEpisode {
@@ -109,6 +143,77 @@ export const itunes = {
     itunesGet<{ resultCount: number; results: (ITunesPodcast | ITunesEpisode)[] }>(
       `${ITUNES}/lookup?id=${id}&entity=podcastEpisode&limit=${limit}&country=${encodeURIComponent(country)}`,
     ),
+}
+
+/* ---------------- 云端同步 (需 x-sync-code 请求头) ---------------- */
+
+export interface SyncSubRow {
+  feed_key: string
+  feed_url: string
+  title: string
+  author: string
+  image: string
+  updated_at: number
+  deleted: number
+}
+
+export interface SyncLaterRow {
+  episode_key: string
+  podcast_key: string
+  feed_url: string
+  podcast_title: string
+  title: string
+  image: string
+  audio_url: string
+  duration: number
+  updated_at: number
+  deleted: number
+}
+
+export interface SyncProgressRow {
+  episode_key: string
+  position: number
+  duration: number
+  updated_at: number
+  title: string
+  podcast_title: string
+  artwork: string
+  audio_url: string
+  podcast_key: string
+  feed_url: string
+}
+
+export interface SyncPullResult {
+  server_time: number
+  subscriptions: SyncSubRow[]
+  listen_later: SyncLaterRow[]
+  progress: SyncProgressRow[]
+  settings: { data: Record<string, unknown>; updated_at: number } | null
+  tombstones: { subscriptions: string[]; listen_later: string[] }
+}
+
+export interface SyncPushBody {
+  subscriptions: SyncSubRow[]
+  listen_later: SyncLaterRow[]
+  progress: SyncProgressRow[]
+  settings: { data: Record<string, unknown>; updated_at: number }
+}
+
+const syncHeaders = (code: string) => ({ 'x-sync-code': code })
+
+export const syncApi = {
+  /** 生成同步码 (明文只返回这一次) */
+  createCode: () => apiPost<{ code: string }>('/sync/code'),
+  /** 换码: 旧码立即作废 */
+  rotate: (code: string) => apiPost<{ code: string }>('/sync/rotate', undefined, syncHeaders(code)),
+  /** 删除云端身份及全部数据 */
+  remove: (code: string) => apiDelete<{ ok: boolean }>('/sync/code', syncHeaders(code)),
+  /** 增量拉取 */
+  pull: (code: string, since: number) =>
+    apiGet<SyncPullResult>(`/sync/pull?since=${since}`, syncHeaders(code)),
+  /** 增量推送 */
+  push: (code: string, body: SyncPushBody) =>
+    apiPost<{ ok: boolean; server_time: number }>('/sync/push', body, syncHeaders(code)),
 }
 
 /* ---------------- 小工具 ---------------- */

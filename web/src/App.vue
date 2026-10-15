@@ -83,17 +83,21 @@ import { useDisplay, useTheme } from 'vuetify'
 import PlayerOverlay from './components/PlayerOverlay.vue'
 import { initTheme, themeIsDark } from './theme'
 import { usePlayerStore } from './stores/player'
+import { useSyncStore } from './stores/sync'
 
 const theme = useTheme()
 const { mdAndUp, smAndDown, xlAndUp } = useDisplay()
 const route = useRoute()
 const router = useRouter()
 const player = usePlayerStore()
+const sync = useSyncStore()
 
 /** 底部播放坞挂载点: 常驻 DOM, shikwasa 单例首次播放时挂载于此 */
 const dockMount = ref<HTMLElement | null>(null)
 onMounted(() => {
   if (dockMount.value) player.registerDock(dockMount.value)
+  // 已绑定同步码: 启动时增量拉取云端数据
+  sync.startup()
 })
 
 /** 960–1280px 显示图标 rail, ≥1280px 完整侧边栏 */

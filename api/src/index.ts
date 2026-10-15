@@ -7,11 +7,20 @@
  *   GET /api/rss?url=...      抓取并解析播客 RSS/Atom, 返回标准化 JSON
  *   GET /api/charts           Apple Podcasts 排行榜
  *   GET /api/genres           播客分类列表
+ *
+ * 云端同步 (需配置 SHIYIN_DB_* 环境变量, 见 src/db.ts):
+ *   POST   /api/sync/code     生成同步码
+ *   POST   /api/sync/rotate   换码 (x-sync-code)
+ *   DELETE /api/sync/code     删除身份及全部数据 (x-sync-code)
+ *   GET    /api/sync/pull     增量拉取 (x-sync-code)
+ *   POST   /api/sync/push     增量推送 (x-sync-code)
  */
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { XMLParser } from 'fast-xml-parser'
+import { migrate } from './migrate.js'
+import { sync } from './sync.js'
 
 const app = new Hono()
 app.use('/api/*', cors())
@@ -341,6 +350,13 @@ app.get('/', (c) => c.text('shiyin api ok'))
 
 app.get('/api/health', (c) => c.json({ ok: true }))
 
+/* 云端同步: /api/sync/* (DB 未配置时各接口返回 503) */
+app.route('/api/sync', sync)
+
 const port = Number(process.env.PORT ?? 3000)
 console.log(`[shiyin] api listening on :${port}`)
+// 启动时建表; 失败不致命 (只读接口照常服务, sync 接口按需报错)
+migrate()
+  .then((ok) => ok && console.log('[shiyin] sync ready'))
+  .catch((e) => console.error('[shiyin] migrate failed:', e?.message ?? e))
 serve({ fetch: app.fetch, port })

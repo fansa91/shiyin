@@ -1,4 +1,6 @@
 import { reactive, watch } from 'vue'
+import { emitLocalChange } from './syncBus'
+import { syncState } from './syncState'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -32,6 +34,25 @@ function load(): Settings {
 /** 全局设置, 响应式 + 自动持久化到 localStorage */
 export const settings = reactive<Settings>(load())
 
+/** 设置的最后变更时间 (毫秒), 云端同步 last-write-wins 依据 */
+const UPDATED_KEY = 'shiyin-settings-updated'
+
+export function settingsUpdatedAt(): number {
+  try {
+    return Number(localStorage.getItem(UPDATED_KEY) ?? 0) || 0
+  } catch {
+    return 0
+  }
+}
+
+export function setSettingsUpdatedAt(ts: number): void {
+  try {
+    localStorage.setItem(UPDATED_KEY, String(ts))
+  } catch {
+    /* ignore */
+  }
+}
+
 watch(
   settings,
   (v) => {
@@ -40,6 +61,10 @@ watch(
     } catch {
       /* ignore */
     }
+    // 云端回写时不 bump 时间戳、不通知, 防止回环 (异步 watch, 由调用方 nextTick 兜底)
+    if (syncState.applyingRemote) return
+    setSettingsUpdatedAt(Date.now())
+    emitLocalChange()
   },
   { deep: true },
 )

@@ -1,8 +1,19 @@
 /**
  * 本地资料库: 订阅 / 稍后听 / 播放历史, 全部 localStorage 持久化。
  * 单集统一用 guid (无 guid 则用 audioUrl) 做稳定 key。
+ *
+ * 云端同步: 每次写入后经 syncBus 通知 stores/sync.ts 做防抖 push;
+ * 云端回写期间 (syncState.applyingRemote) 抑制通知, 防止回环。
  */
 import { rssKey } from './models'
+import { emitLocalChange } from './syncBus'
+import { syncState } from './syncState'
+import { recordTombstone } from './syncTomb'
+
+/** 本地写入后通知同步引擎 (云端回写时抑制) */
+function changed(): void {
+  if (!syncState.applyingRemote) emitLocalChange()
+}
 
 /* ---------------- 订阅 ---------------- */
 
@@ -48,6 +59,7 @@ export function subscribe(sub: Omit<Subscription, 'addedAt'>): void {
   const list = getSubscriptions().filter((s) => s.key !== sub.key)
   list.unshift({ ...sub, addedAt: Date.now() })
   writeJson(SUB_KEY, list)
+  changed()
 }
 
 export function unsubscribe(key: string): void {
@@ -55,6 +67,8 @@ export function unsubscribe(key: string): void {
     SUB_KEY,
     getSubscriptions().filter((s) => s.key !== key),
   )
+  recordTombstone('subscriptions', key)
+  changed()
 }
 
 /** 供手动 RSS 使用: 由 feedUrl 生成 key */
@@ -90,6 +104,7 @@ export function addLater(item: Omit<LaterItem, 'addedAt'>): void {
   const list = getLater().filter((l) => l.guid !== item.guid)
   list.unshift({ ...item, addedAt: Date.now() })
   writeJson(LATER_KEY, list)
+  changed()
 }
 
 export function removeLater(guid: string): void {
@@ -97,6 +112,8 @@ export function removeLater(guid: string): void {
     LATER_KEY,
     getLater().filter((l) => l.guid !== guid),
   )
+  recordTombstone('listen_later', guid)
+  changed()
 }
 
 export function toggleLater(item: Omit<LaterItem, 'addedAt'>): boolean {
@@ -153,6 +170,7 @@ export function savePlayback(guid: string, entry: HistoryEntry): void {
   const keys = Object.keys(map).sort((a, b) => map[b].updatedAt - map[a].updatedAt)
   for (const k of keys.slice(HISTORY_MAX)) delete map[k]
   writeJson(HISTORY_KEY, map)
+  changed()
 }
 
 /** 按更新时间倒序的列表, 供历史页渲染 */
